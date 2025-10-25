@@ -1,0 +1,14 @@
+{
+  "user_models": {
+    "123456789": {
+      "name": "Example Model",
+      "provider": "Example Provider",
+      "api_url": "https://api.example.com/v1/chat/completions",
+      "api_key": "sk-example-api-key-replace-with-your-own",
+      "model": "example-model"
+    }
+  },
+  "banned_users": [
+    987654321
+  ]
+}

@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  # 条件服务：本地PostgreSQL数据库（仅当ENVIRONMENT=local时启动）
+  postgres:
+    image: postgres:15-alpine
+    container_name: telegram-ai-bot-postgres
+    environment:
+      POSTGRES_DB: ${LOCAL_PG_DATABASE:-telegram_ai_bot}
+      POSTGRES_USER: ${LOCAL_PG_USER:-user}
+      POSTGRES_PASSWORD: ${LOCAL_PG_PASSWORD:-password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - telegram-bot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LOCAL_PG_USER:-user} -d ${LOCAL_PG_DATABASE:-telegram_ai_bot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - local  # 仅当使用 --profile local 时启动
+
+  # 条件服务：本地Redis缓存（仅当ENVIRONMENT=local时启动）
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-ai-bot-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - telegram-bot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - local  # 仅当使用 --profile local 时启动
+
+  # Telegram AI Bot (智能切换版)
+  bot:
+    image: python:3.11-slim
+    container_name: telegram-ai-bot
+    working_dir: /app
+    command: >
+        sh -c "
+          pip install python-telegram-bot aiohttp sqlalchemy asyncpg alembic psycopg2-binary redis pydantic pydantic-settings &&
+          python ai_bot.py
+        "
+    volumes:
+      - .:/app
+    environment:
+      # Telegram Configuration
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS}
+      
+      # 智能数据库连接配置 (根据ENVIRONMENT自动选择)
+      DATABASE_URL: ${ENVIRONMENT:-cloud} == 'local' ? 
+                    postgresql+asyncpg://${LOCAL_PG_USER:-user}:${LOCAL_PG_PASSWORD:-password}@${LOCAL_PG_HOST:-postgres}:${LOCAL_PG_PORT:-5432}/${LOCAL_PG_DATABASE:-telegram_ai_bot} :
+                    postgresql+asyncpg://${AIVEN_PG_USER}:${AIVEN_PG_PASSWORD}@${AIVEN_PG_HOST}:${AIVEN_PG_PORT}/${AIVEN_PG_DATABASE}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-20}
+      
+      # 智能Redis连接配置 (根据ENVIRONMENT自动选择)
+      REDIS_URL: ${ENVIRONMENT:-cloud} == 'local' ? 
+                redis://${LOCAL_REDIS_HOST:-redis}:${LOCAL_REDIS_PORT:-6379}/0 :
+                redis://${UPSTASH_REDIS_USER}:${UPSTASH_REDIS_PASSWORD}@${UPSTASH_REDIS_HOST}:${UPSTASH_REDIS_PORT}
+      REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-20}
+      
+      # Security Configuration
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      
+      # AI Model Configuration
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      
+      # Rate Limiting
+      RATE_LIMIT_GLOBAL: ${RATE_LIMIT_GLOBAL:-100}
+      RATE_LIMIT_USER: ${RATE_LIMIT_USER:-10}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60}
+      
+      # Context Management
+      CONTEXT_MAX_MESSAGES: ${CONTEXT_MAX_MESSAGES:-20}
+      CONTEXT_TTL: ${CONTEXT_TTL:-900}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      
+      # Application
+      DEBUG: ${DEBUG:-false}
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-8000}
+      
+      # 环境选择
+      ENVIRONMENT: ${ENVIRONMENT:-cloud}
+    depends_on:
+      condition: service_started  # 默认启动条件
+    networks:
+      - telegram-bot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Database Admin (pgAdmin)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: telegram-ai-bot-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "127.0.0.1:8080:80"
+    networks:
+      - telegram-bot-network
+    restart: unless-stopped
+
+  # Redis Admin (RedisInsight)
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: telegram-ai-bot-redisinsight
+    ports:
+      - "127.0.0.1:8001:8001"
+    networks:
+      - telegram-bot-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  telegram-bot-network:
+    driver: bridge

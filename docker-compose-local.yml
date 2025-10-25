@@ -1,9 +1,48 @@
 version: '3.8'
 
 services:
-  # 本地PostgreSQL和Redis服务已移除，使用Aiven PostgreSQL和Upstash Redis云服务
+  # PostgreSQL Database (本地测试版)
+  postgres:
+    image: postgres:15-alpine
+    container_name: telegram-ai-bot-postgres
+    environment:
+      POSTGRES_DB: telegram_ai_bot
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - telegram-bot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d telegram_ai_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Telegram AI Bot (Full Version)
+  # Redis Cache (本地测试版)
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-ai-bot-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - telegram-bot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Telegram AI Bot (本地测试版)
   bot:
     image: python:3.11-slim
     container_name: telegram-ai-bot
@@ -20,13 +59,13 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS}
       
-      # Database Configuration (Aiven PostgreSQL)
-      DATABASE_URL: postgresql+asyncpg://${AIVEN_PG_USER}:${AIVEN_PG_PASSWORD}@${AIVEN_PG_HOST}:${AIVEN_PG_PORT}/${AIVEN_PG_DATABASE}
+      # Database Configuration (本地测试)
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/telegram_ai_bot
       DATABASE_POOL_SIZE: 10
       DATABASE_MAX_OVERFLOW: 20
       
-      # Redis Configuration (Upstash Redis)
-      REDIS_URL: redis://${UPSTASH_REDIS_USER}:${UPSTASH_REDIS_PASSWORD}@${UPSTASH_REDIS_HOST}:${UPSTASH_REDIS_PORT}
+      # Redis Configuration (本地测试)
+      REDIS_URL: redis://redis:6379/0
       REDIS_MAX_CONNECTIONS: 20
       
       # Security Configuration
@@ -51,11 +90,14 @@ services:
       LOG_FORMAT: json
       
       # Application
-      DEBUG: false
+      DEBUG: true  # 本地测试环境启用调试模式
       HOST: 0.0.0.0
       PORT: 8000
-    # 不再依赖本地数据库和Redis服务
-    depends_on: []
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - telegram-bot-network
     restart: unless-stopped
@@ -81,8 +123,8 @@ services:
     networks:
       - telegram-bot-network
     restart: unless-stopped
-    # 不再依赖本地PostgreSQL服务
-    depends_on: []
+    depends_on:
+      - postgres
 
   # Redis Admin (RedisInsight)
   redisinsight:
@@ -93,11 +135,14 @@ services:
     networks:
       - telegram-bot-network
     restart: unless-stopped
-    # 不再依赖本地Redis服务
-    depends_on: []
+    depends_on:
+      - redis
 
 volumes:
-  # 仅保留pgAdmin数据卷
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
   pgadmin_data:
     driver: local
 
